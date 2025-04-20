@@ -59,35 +59,59 @@ def extract_title(soup):
 async def fetch_articles(sources, max_articles_per_source=2):
     articles = []
     async with aiohttp.ClientSession() as session:
+        # Fetch all source pages concurrently
+        source_tasks = []
+        source_infos = []  # Track which task belongs to which source
+        
         for source_url in sources:
             source_name = source_url.split('//')[1].split('/')[0].replace('www.', '')
-            try:
-                html = await fetch_with_retry(session, source_url, headers={
+            task = fetch_with_retry(session, source_url, headers={
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+            })
+            source_tasks.append(task)
+            source_infos.append((source_url, source_name))
+        
+        # Run all source tasks concurrently
+        source_results = await asyncio.gather(*source_tasks, return_exceptions=True)
+        
+        # Process results and prepare article tasks
+        all_article_tasks = []
+        all_article_infos = []
+        
+        for i, html in enumerate(source_results):
+            if isinstance(html, Exception) or not html:
+                continue
+                
+            source_url, source_name = source_infos[i]
+            soup = BeautifulSoup(html, 'html.parser')
+            links = extract_article_links(soup, source_url)[:max_articles_per_source]
+            
+            # Create tasks for each article
+            for link in links:
+                task = fetch_with_retry(session, link, headers={
                     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
                 })
-                if html:
-                    soup = BeautifulSoup(html, 'html.parser')
-                    links = extract_article_links(soup, source_url)
-                    
-                    for i, link in enumerate(links[:max_articles_per_source]):
-                        try:
-                            article_html = await fetch_with_retry(session, link, headers={
-                                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-                            })
-                            if article_html:
-                                article_soup = BeautifulSoup(article_html, 'html.parser')
-                                title = extract_title(article_soup)
-                                if title:
-                                    articles.append({
-                                        'url': link,
-                                        'title': title,
-                                        'html': article_html,
-                                        'source': source_name
-                                    })
-                        except Exception as e:
-                            logging.error(f"Error fetching article {link}: {e}")
-            except Exception as e:
-                logging.error(f"Error fetching source {source_url}: {e}")
+                all_article_tasks.append(task)
+                all_article_infos.append((link, source_name))
+        
+        # Run all article tasks concurrently
+        article_results = await asyncio.gather(*all_article_tasks, return_exceptions=True)
+        
+        # Process article results
+        for i, html in enumerate(article_results):
+            if isinstance(html, Exception) or not html:
+                continue
+                
+            url, source_name = all_article_infos[i]
+            article_soup = BeautifulSoup(html, 'html.parser')
+            title = extract_title(article_soup)
+            if title:
+                articles.append({
+                    'url': url,
+                    'title': title,
+                    'html': html,
+                    'source': source_name
+                })
     
     return articles
 
